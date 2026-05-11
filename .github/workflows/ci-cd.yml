@@ -1,0 +1,203 @@
+# ============================================================================
+#  Pipeline CI/CD — Aula de Integração e Entrega Contínuas
+# ============================================================================
+#  Este arquivo é a "receita" do nosso pipeline. Toda vez que alguém faz
+#  push ou abre um pull request, o GitHub roda esses passos automaticamente.
+#
+#  Estrutura geral (4 jobs encadeados):
+#
+#      lint  ───┐
+#               ├──► build ──► deploy (só na main)
+#      test  ───┘
+#
+#  Os jobs `lint` e `test` rodam EM PARALELO (mais rápido).
+#  `build` só roda se os dois passaram.
+#  `deploy` só roda se for push na main E `build` passou.
+# ============================================================================
+
+name: CI/CD Pipeline
+
+# ---------------------------------------------------------------------------
+# TRIGGERS — quando o pipeline deve rodar
+# ---------------------------------------------------------------------------
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  # Permite rodar manualmente pela aba "Actions" do GitHub (útil pra demo)
+  workflow_dispatch:
+
+# ---------------------------------------------------------------------------
+# VARIÁVEIS GLOBAIS — disponíveis em todos os jobs
+# ---------------------------------------------------------------------------
+env:
+  PYTHON_DEFAULT: "3.12"
+
+jobs:
+  # =========================================================================
+  # JOB 1: LINT — verifica estilo e erros estáticos
+  # =========================================================================
+  # Roda primeiro porque é rapidíssimo (segundos). Se o código tem erro
+  # de sintaxe ou import quebrado, falhamos AGORA — antes mesmo de testar.
+  # =========================================================================
+  lint:
+    name: 🧹 Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python ${{ env.PYTHON_DEFAULT }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_DEFAULT }}
+          cache: "pip"
+
+      - name: Instalar ruff
+        run: pip install ruff==0.6.8
+
+      - name: Rodar ruff (verificação de estilo e erros)
+        run: ruff check app tests
+
+      - name: Verificar formatação
+        run: ruff format --check app tests
+
+  # =========================================================================
+  # JOB 2: TEST — roda a suite de testes em múltiplas versões do Python
+  # =========================================================================
+  # Usa "matrix" para rodar os testes em 3.11 E 3.12 simultaneamente.
+  # Garante que o código funciona em todas as versões que prometemos suportar.
+  # =========================================================================
+  test:
+    name: 🧪 Testes (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false  # Se uma versão falha, continua testando as outras
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Rodar pytest com cobertura
+        run: pytest
+
+      - name: Publicar relatório de cobertura como artefato
+        # Só publica uma vez (na versão default), pra não duplicar
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7
+
+  # =========================================================================
+  # JOB 3: BUILD — empacota a aplicação
+  # =========================================================================
+  # Só roda se LINT e TEST passaram. É aqui que normalmente:
+  #   - Constrói a imagem Docker
+  #   - Gera artefatos (.whl, .tar.gz, etc)
+  #   - Sobe num registry (ECR, Docker Hub, GHCR)
+  #
+  # Para o demo, vamos simular: validamos que o app sobe sem erro.
+  # =========================================================================
+  build:
+    name: 📦 Build
+    runs-on: ubuntu-latest
+    needs: [lint, test]  # Depende dos dois jobs anteriores
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_DEFAULT }}
+          cache: "pip"
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Smoke test — app sobe sem erro?
+        run: |
+          # Inicia o servidor em background e verifica que /health responde
+          uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          SERVER_PID=$!
+          sleep 3
+
+          echo "Chamando /health..."
+          curl -fsS http://localhost:8000/health
+
+          echo "Chamando /add?a=2&b=3..."
+          curl -fsS "http://localhost:8000/add?a=2&b=3"
+
+          kill $SERVER_PID
+          echo "✅ Build validado — app sobe e responde corretamente."
+
+  # =========================================================================
+  # JOB 4: DEPLOY — entrega/implanta em produção
+  # =========================================================================
+  # CONDIÇÕES:
+  #   - Só roda em push na main (não em PR, não em develop)
+  #   - Só roda se BUILD passou
+  #
+  # Para o demo, simulamos o deploy. Em um projeto real, este job:
+  #   - Faria login no provedor (AWS / Render / Fly.io / Vercel)
+  #   - Subiria a imagem Docker ou faria push do código
+  #   - Rodaria smoke test contra o ambiente de produção
+  #   - Notificaria o time (Slack/Discord)
+  # =========================================================================
+  deploy:
+    name: 🚀 Deploy para Produção
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    # 'environment' habilita aprovação manual e secrets específicos.
+    # Configurável em Settings → Environments do repo.
+    environment:
+      name: production
+      # url: https://meu-app.exemplo.com  # exibe link na timeline do deploy
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Simular deploy
+        run: |
+          echo "🚀 Iniciando deploy para PRODUÇÃO..."
+          echo "📦 Versão: ${{ github.sha }}"
+          echo "👤 Por: ${{ github.actor }}"
+          echo "⏱️  Em: $(date)"
+          echo ""
+          echo "[1/3] Fazendo login no provedor de hospedagem..."
+          sleep 1
+          echo "[2/3] Enviando artefato..."
+          sleep 1
+          echo "[3/3] Validando saúde do ambiente..."
+          sleep 1
+          echo ""
+          echo "✅ Deploy concluído com sucesso!"
+
+      - name: Resumo do deploy
+        run: |
+          echo "## 🚀 Deploy realizado" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Autor | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
