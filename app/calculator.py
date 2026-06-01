@@ -31,3 +31,7 @@ def divide(a: float, b: float) -> float:
     if b == 0:
         raise ValueError("Divisão por zero não é permitida")
     return a / b
+
+def power(a: float, b: float) -> float:
+    """Eleva a a potencia b."""
+    return a ** b
