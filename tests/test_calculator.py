@@ -53,3 +53,10 @@ class TestDivide:
         # corretamente, evitando que a divisão por zero quebre a API.
         with pytest.raises(ValueError, match="Divisão por zero"):
             calculator.divide(10, 0)
+
+class TestPower:
+    def test_power_basico(self):
+        assert calculator.power(2, 10) == 1024
+
+    def test_power_zero(self):
+        assert calculator.power(5, 0) == 1
